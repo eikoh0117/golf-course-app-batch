@@ -1,5 +1,5 @@
-require 'rakuten_web_service'
 require 'google_maps_service'
+require 'rakuten_web_service'
 require 'aws-record'
 
 class SearchGolfApp # DynamoDBのテーブル名とします
@@ -10,14 +10,17 @@ class SearchGolfApp # DynamoDBのテーブル名とします
 end
 
 module Area
+  # 楽天APIで定められているエリアコード（8:茨城県,11:埼玉県,12:千葉県,13:東京都,14:神奈川県）
+  # この5つのエリアを対象とします
+  # 参考(楽天APIの仕様):https://webservice.rakuten.co.jp/api/areacode/golfarea.html
   CODES = ['8', '11', '12', '13', '14']
 end
 
 module Departure
   # 基準とする出発地点(今回はこの2箇所を基準となる出発地点とします)
   DEPARTURES = {
-  1 => '東京駅',
-  2 => '横浜駅',
+   1 => '東京駅',
+   2 => '横浜駅',
   }
 end
 
@@ -43,31 +46,29 @@ def put_item(course_id, durations) # DynamoDBへ保存します
   duration.save
 end
 
-def lambda_handler(event:, context:)
+def lambda_handler(event:, context:) # バッチ処理が起動したときに最初に動くメソッド
   RakutenWebService.configure do |c|
     c.application_id = ENV['RAKUTEN_APPID']
     c.affiliate_id = ENV['RAKUTEN_AFID']
   end
 
   Area::CODES.each do |code| # 全てのエリアに対して以下操作を行う
-    1.upto(100) do |page|
+    1.upto(100) do |page| # 楽天APIで取得できる全てのゴルフ場に対して以下操作を行う
       # コース一覧を取得する(楽天APIの仕様上、一度に全てのゴルフ場を取得できないのでpageを分けて取得している) 参考(楽天APIの仕様):https://webservice.rakuten.co.jp/api/goragolfcoursesearch/
-      # TODO: 1. このエリアのゴルフ場を楽天APIで全て取得する
-      courses = RakutenWebService::Gora::Course.search(areaCode: code, page: page)
+     courses = RakutenWebService::Gora::Course.search(areaCode: code, page: page)
       courses.each do |course|
         course_id = course['golfCourseId']
         course_name = course['golfCourseName']
         next if course_name.include?('レッスン') # ゴルフ場以外の情報(レッスン情報)をこれでスキップしてる
-      # TODO: 2. 出発地点から取得したゴルフ場までの所要時間をGoogle Maps Platformで取得する
+
         durations = {}
         Departure::DEPARTURES.each do |duration_id, departure|
           minutes = duration_minutes(departure, course_name)
           durations.store(duration_id, minutes) if minutes
         end
-      # TODO: 3. 取得した取得した情報をDynamoDBに保存する
-        put_item(course_id, durations) unless durations.empty?
+        put_item(course_id, durations) unless durations.empty? # コースIDとそれぞれの出発地点とコースへの移動時間をDynamoDBへ格納する
       end
-      break unless courses.has_next_page? # 次のページが存在するかどうか確認するメソッド
+      break unless courses.next_page? # 次のページが存在するかどうか確認するメソッド
     end
   end
 
